@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import tensorflow as tf
 
@@ -262,8 +264,6 @@ class DCGAN:
 
     def _build_train_ops(self):
         minibatch_size = self._config['minibatch_size']
-        input_size = self._config['input_size']
-        in_chs = self._config['num_input_chs']
         input_shape = (minibatch_size, 1)
 
         real_D_logits = tf.placeholder(
@@ -282,7 +282,7 @@ class DCGAN:
             tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=tf.ones_like(real_D_logits),
                 logits=real_D_logits,
-            )
+            ),
             name='real_D_loss',
         )
 
@@ -290,7 +290,7 @@ class DCGAN:
             tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=tf.zeros_like(fake_D_logits),
                 logits=fake_D_logits,
-            )
+            ),
             name='fake_D_loss',
         )
 
@@ -300,7 +300,7 @@ class DCGAN:
             tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=tf.zeros_like(fake_D_logits),
                 logits=(-fake_D_logits),
-            )
+            ),
             name='G_loss',
         )
 
@@ -308,7 +308,7 @@ class DCGAN:
         adam = tf.train.AdamOptimizer(**self._config['adam'])
 
         train_D_op = adam.minimize(
-            loss=(real_d_loss + fake_d_loss),
+            loss=(real_D_loss + fake_D_loss),
             name='minimize_D_loss',
         )
 
@@ -320,7 +320,7 @@ class DCGAN:
     def _load_data(self):
         dataset_name=self._config['dataset_name']
 
-        if dataset_name = 'MNIST':
+        if dataset_name == 'MNIST':
             ((x_train, y_train),
              (x_test, y_test)) = tf.contrib.keras.datasets.mnist.load_data()
             self._mnist_data = {
@@ -337,7 +337,7 @@ class DCGAN:
     def get_samples_from_data(self, minibatch_size=1):
         dataset_name=self._config['dataset_name']
         
-        if dataset_name = 'MNIST':
+        if dataset_name == 'MNIST':
             samples = self._mnist_data['x_train'][
                 np.random.randint(
                     low=0,
@@ -363,11 +363,13 @@ class DCGAN:
             ),
             feed_dict=feed_dict,
         )
+
+        return samples
         
 
 def batch_normalization(
     input_tensor,
-    momentum=0.99
+    momentum=0.99,
     epsilon=0.001,
     training=False,
     use_layers_api=False,
@@ -376,7 +378,6 @@ def batch_normalization(
     x_shape = x.shape.as_list()[1:]
 
     if use_layers_api:
-        name_prefix = 
         y = tf.layers.batch_normalization(
             x,
             momentum=momentum,
@@ -385,12 +386,6 @@ def batch_normalization(
             name='layers_batch_normalization',
         )
     else:
-        name_prefix = 
-        if training:
-            name_suffix = 'training'
-        else:
-            name_suffix = 'inference'
-
         with tf.variable_scope('nn_batch_normalization'):
             # TODO: Use tf.train.ExponentialMovingAverage(decay=momentum)
             inf_mean = tf.get_variable(
@@ -430,7 +425,7 @@ def batch_normalization(
                     )
 
                     with tf.control_dependencies(
-                        [inf_mean_op. inf_variance_op]
+                        [inf_mean_op, inf_variance_op]
                     ):
                         y = tf.nn.batch_normalization(
                             x,
