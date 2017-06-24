@@ -39,13 +39,14 @@ class DCGAN:
         self._tf_graph = tf.Graph()
         with self._tf_graph.as_default():
             with tf.variable_scope('generator'):
+                self._G_var_list = None
                 self._build_generator_network()
             with tf.variable_scope('discriminator'):
                 self._build_discriminator_network()
 
             if self.training:
-                with tf.variable('train'):
-                    self._build_train_ops()
+                with tf.variable_scope('train'):
+#                    self._build_train_ops()
 
                 with tf.variable_scope('summary'):
                     self._build_summary_ops()
@@ -62,37 +63,38 @@ class DCGAN:
         for i in range(self._config['num_training_iterations']):
             real_inputs = self.get_samples_from_data(minibatch_size)
             fake_inputs = self.generate_samples(minibatch_size)
+            inputs = np.concatenate(
+                (real_inputs, fake_inputs),
+            )
+            logit_labels = np.concatenate(
+                (np.ones(minibatch_size), np.zeros(minibatch_size)),
+            )
 
             fetches = [
                 self._tf_graph.get_tensor_by_name(
-                    'training/real_D_loss:0',
-                ),
-                self._tf_graph.get_tensor_by_name(
-                    'training/fake_D_loss:0',
+                    'training/D_loss:0',
                 ),
                 self._tf_graph.get_operation_by_name(
                     'train/minimize_D_loss',
                 ),
             ]
 
+            D_input_layer_name, _ = self._config['discriminator'][0]
             feed_dict = {
                 self._tf_graph.get_tensor_by_name(
-                    'training/real_D_logits:0',
-                ): self.get_D_logits(real_inputs),
+                    'discriminator/{}/inputs:0'.format(D_input_layer_name),
+                ): self.get_D_logits(inputs),
                 self._tf_graph.get_tensor_by_name(
-                    'training/fake_D_logits:0',
-                ): self.get_D_logits(fake_inputs),
+                    'training/logit_labels:0',
+                ): logit_labels,
             }
 
-            real_D_loss, fake_D_loss, _ = self._tf_session.run(
+            D_loss, _ = self._tf_session.run(
                 fetches=fetches,
                 feed_dict=feed_dict,
             )
 
             fetches = [
-                self._tf_graph.get_tensor_by_name(
-                    'training/fake_D_logits:0',
-                ),
                 self._tf_graph.get_tensor_by_name(
                     'training/G_loss:0',
                 ),
@@ -101,10 +103,15 @@ class DCGAN:
                 ),
             ]
 
+            D_input_layer_name, _ = self._config['generator'][0]
+            
             feed_dict = {
                 self._tf_graph.get_tensor_by_name(
-                    'training/fake_D_logits:0',
-                ): self.get_D_logits(fake_inputs),
+                    'generator/{}/Zs:0'.format(G_input_layer_name),
+                ): self._sample_Zs(minibatch_size),
+                self._tf_graph.get_tensor_by_name(
+                    'training/logit_labels:0',
+                ): np.zeros(minibatch_size),
             }
 
             G_loss, _ = self._tf_session.run(
@@ -112,7 +119,13 @@ class DCGAN:
                 feed_dict=feed_dict,
             )
 
+    def _get_variable_initializer(self):
+        return tf.truncated_normal_initializer(
+            **self._config['variable_initializer']
+        )
+
     def _build_generator_network(self):
+        self._G_var_list = []
         minibatch_size = self._config['minibatch_size']
         prev_layer = None
 
@@ -158,7 +171,7 @@ class DCGAN:
                     prev_layer = tf.placeholder(
                         dtype=tf.float32,
                         shape=(minibatch_size, 1, 1, in_chs),
-                        name='Z',
+                        name='Zs',
                     )
                     out_size = filter_size
                 else:
@@ -169,10 +182,11 @@ class DCGAN:
                     name='W',
                     shape=(filter_size,
                            filter_size,
-                           in_chs,
-                           out_chs),
+                           out_chs,
+                           in_chs),
                     initializer=self._get_variable_initializer(),
                 )
+                self._G_var_list.append(W)
 
                 pre_activation = tf.nn.conv2d_transpose(
                     prev_layer,
@@ -194,6 +208,12 @@ class DCGAN:
                         ),
                         name='activation',
                     )
+                    self._G_var_list += [
+                        self._tf_graph.get_tensor_by_name(
+                            'generator/{}/nn_batch_normalization/{}:0'
+                            .format(layer_name, name)
+                        ) for name in ('scale', 'offset')
+                    ]
                 else:
                     new_layer = tf.tanh(pre_activation, name='output')
                     
@@ -204,7 +224,8 @@ class DCGAN:
         # End of conf for loop.
 
     def _build_discriminator_network(self):
-        minibatch_size = self._config['minibatch_size']
+#        minibatch_size = self._config['minibatch_size']
+        minibatch_size = None 
         prev_layer = None
 
         for layer_name, layer_conf in self._config['discriminator']:
@@ -215,7 +236,7 @@ class DCGAN:
                     prev_layer = tf.placeholder(
                         dtype=tf.float32,
                         shape=(minibatch_size, input_size, input_size, in_chs),
-                        name='input',
+                        name='inputs',
                     )
                 else:
                     _, _, _, in_chs = prev_layer.shape.as_list()
@@ -233,11 +254,16 @@ class DCGAN:
                     initializer=self._get_variable_initializer(),
                 )
 
+                if 'output' in layer_name:
+                    padding = 'VALID'
+                else:
+                    padding = 'SAME'
+
                 pre_activation = tf.nn.conv2d(
                     prev_layer,
                     W,
                     strides=(1, stride, stride, 1),
-                    padding='SAME',
+                    padding=padding,
                     name='pre_activation',
                 )
 
@@ -255,7 +281,7 @@ class DCGAN:
                     new_layer = tf.reshape(
                         pre_activation,
                         (minibatch_size, 1),
-                        name='output_logits',
+                        name='logits',
                     )
 
             # End of layer_name variable scope.
@@ -263,43 +289,54 @@ class DCGAN:
             prev_layer = new_layer
 
     def _build_train_ops(self):
-        minibatch_size = self._config['minibatch_size']
-        input_shape = (minibatch_size, 1)
+#        minibatch_size = self._config['minibatch_size']
+#        input_shape = (minibatch_size, 1)
+#
+#        real_D_logits = tf.placeholder(
+#            dtype=tf.float32,
+#            shape=input_shape,
+#            name='real_D_logits',
+#        )
+#
+#        fake_D_logits = tf.placeholder(
+#            dtype=tf.float32,
+#            shape=input_shape,
+#            name='fake_D_logits',
+#        )
 
-        real_D_logits = tf.placeholder(
+        D_output_layer_name, _ = self._config['discriminator'][-1]
+        D_logits = self._tf_graph.get_tensor_by_name(
+            'discriminator/{}/logits:0'.format(D_output_layer_name),
+        )
+
+        logit_labels = tf.placeholder(
             dtype=tf.float32,
-            shape=input_shape,
-            name='real_D_logits',
+            shape=D_logits.shape,
+            name='logit_labels',
         )
 
-        fake_D_logits = tf.placeholder(
-            dtype=tf.float32,
-            shape=input_shape,
-            name='fake_D_logits',
-        )
-
-        real_D_loss = tf.reduce_mean(
+        D_loss = tf.reduce_mean(
             tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.ones_like(real_D_logits),
-                logits=real_D_logits,
+                labels=logit_labels,
+                logits=D_logits,
             ),
-            name='real_D_loss',
+            name='D_loss',
         )
 
-        fake_D_loss = tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.zeros_like(fake_D_logits),
-                logits=fake_D_logits,
-            ),
-            name='fake_D_loss',
-        )
+#        fake_D_loss = tf.reduce_mean(
+#            tf.nn.sigmoid_cross_entropy_with_logits(
+#                labels=tf.zeros_like(fake_D_logits),
+#                logits=fake_D_logits,
+#            ),
+#            name='fake_D_loss',
+#        )
 
 #        G_loss = -fake_D_loss 
 
         G_loss = tf.reduce_mean(
             tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.zeros_like(fake_D_logits),
-                logits=(-fake_D_logits),
+                labels=tf.zeros_like(D_logits),
+                logits=(-D_logits),
             ),
             name='G_loss',
         )
@@ -315,6 +352,7 @@ class DCGAN:
         train_G_op = adam.minimize(
             loss=G_loss,
             name='minimize_G_loss',
+            var_list=self._G_var_list,
         )
 
     def _load_data(self):
@@ -350,11 +388,23 @@ class DCGAN:
 
         return samples
 
+    def _sample_Zs(self, minibatch_size=1):
+        cfg = self._config['generator_input']
+        Zs = np.reshape(
+            np.random.uniform(
+                low=cfg['low'],
+                high=cfg['high'],
+                size=(minibatch_size * cfg['size']),
+            ),
+            (minibatch_size, cfg['size']),
+        )
+        return Zs
+
     def generate_samples(self, minibatch_size=1):
         feed_dict = {
             self._tf_graph.get_tensor_by_name(
-                'generator/conv0_input/Z:0',
-            ): np.random.uniform(**self._config['generator_input'])
+                'generator/conv0_input/Zs:0',
+            ): self._sample_Zs(minibatch_size)
         }
 
         samples = self._tf_session.run(

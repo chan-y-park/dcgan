@@ -1,5 +1,5 @@
 dcgan_mnist = {
-    'dataset': 'MNIST',
+    'dataset_name': 'MNIST',
     'generator': [
 #        ('fc', {'out_size': 7, 'out_chs': 128}),
 #        ('conv1', {'filter_size': 5, 'stride': 2, 'out_chs': 64}),
@@ -28,4 +28,5 @@ dcgan_mnist = {
     },
     'num_training_iterations': 100,
     'generator_input': {'low': -1.0, 'high': 1.0, 'size': 100},
+    'variable_initializer': {'mean': 0, 'stddev': 0.02},
 }
