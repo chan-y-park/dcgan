@@ -1,4 +1,4 @@
-dcgan_mnist = {
+mnist = {
     'dataset_name': 'MNIST',
     'generator_input': {'low': -1.0, 'high': 1.0, 'size': 100},
     'generator': [

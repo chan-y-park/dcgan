@@ -62,6 +62,7 @@ class DCGAN:
 
     def _build_generator_network(self):
         minibatch_size = self._config['minibatch_size']
+#        minibatch_size = None
 
         cfg_G = self._config['generator']
         num_layers = len(cfg_G)
@@ -212,6 +213,7 @@ class DCGAN:
 
     def _build_discriminator_network(self):
         minibatch_size = self._config['minibatch_size']
+#        minibatch_size = None
 
         cfg_D = self._config['discriminator']
         num_layers = len(cfg_D)
@@ -268,7 +270,8 @@ class DCGAN:
                     # XXX Just logits or plus sigmoid?
                     new_layer = tf.reshape(
                         pre_activation,
-                        (minibatch_size, 1),
+#                        (minibatch_size, 1),
+                        shape=(-1, 1),
                         name='logits',
                     )
                 else:
@@ -361,6 +364,7 @@ class DCGAN:
                     size=minibatch_size,
                 )
             ]
+            samples = samples[:,:,:,np.newaxis]
         else:
             raise ValueError('Unknown dataset name: {}.'.format(dataset_name))
 
@@ -378,7 +382,9 @@ class DCGAN:
         )
         return Zs
 
-    def generate_samples(self, minibatch_size=1):
+    def generate_samples(self):
+        minibatch_size = self._config['minibatch_size']
+
         feed_dict = {
             self._get_G_input_tensor(): self._sample_Zs(minibatch_size)
         }
@@ -434,24 +440,25 @@ class DCGAN:
                     'training/D_loss:0'
                 ),
                 self._tf_graph.get_operation_by_name(
-                    'train/minimize_D_loss'
+                    'training/minimize_D_loss'
                 ),
             ]
 
-            D_input_tesnor = self._get_G_output_tensor() 
-            D_logit_label_tensor = self._tf_graph.get_tensor_by_name(
+            D_input_tensor = self._get_G_output_tensor() 
+            D_logit_labels_tensor = self._tf_graph.get_tensor_by_name(
                 'training/logit_labels:0'
             )
+            D_logit_labels_shape = D_logit_labels_tensor.shape.as_list()
 
             for inputs, logit_labels in (
                 (self.get_samples_from_data(minibatch_size),
-                 np.ones(minibatch_size)),
+                 np.ones(D_logit_labels_shape)),
                 (self.generate_samples(minibatch_size),
-                 np.zeros(minibatch_size)),
+                 np.zeros(D_logit_labels_shape)),
             ):
                 feed_dict = {
                     D_input_tensor: inputs,
-                    D_logit_label_tensor: logit_labels,
+                    D_logit_labels_tensor: logit_labels,
                 }
 
                 D_loss, _ = self._tf_session.run(
@@ -465,7 +472,7 @@ class DCGAN:
                     'training/G_loss:0'
                 ),
                 self._tf_graph.get_operation_by_name(
-                    'train/minimize_G_loss'
+                    'training/minimize_G_loss'
                 ),
             ]
 
