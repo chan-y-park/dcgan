@@ -46,8 +46,8 @@ class DCGAN:
                 self._build_discriminator_network()
 
             if self.training:
-                with tf.variable_scope('train'):
-#                    self._build_train_ops()
+                with tf.variable_scope('training'):
+                    self._build_train_ops()
 
                 with tf.variable_scope('summary'):
                     self._build_summary_ops()
@@ -55,73 +55,13 @@ class DCGAN:
             self._tf_session = tf.Session(config=self._tf_config)
             self._tf_session.run(tf.global_variables_initializer())
 
-    def train(self):
-        if not self.training:
-            raise RuntimeError
-
-        minibatch_size = self._config['minibatch_size']
-
-        for i in range(self._config['num_training_iterations']):
-            real_inputs = self.get_samples_from_data(minibatch_size)
-            fake_inputs = self.generate_samples(minibatch_size)
-            D_inputs = np.concatenate(
-                (real_inputs, fake_inputs),
-            )
-            logit_labels = np.concatenate(
-                (np.ones(minibatch_size), np.zeros(minibatch_size)),
-            )
-
-            fetches = [
-                self._tf_graph.get_tensor_by_name(
-                    'training/D_loss:0',
-                ),
-                self._tf_graph.get_operation_by_name(
-                    'train/minimize_D_loss',
-                ),
-            ]
-
-            D_input_tesnor = self._get_G_output_tensor() 
-            feed_dict = {
-                D_input_tensor: D_inputs,
-                self._tf_graph.get_tensor_by_name(
-                    'training/logit_labels:0',
-                ): logit_labels,
-            }
-
-            D_loss, _ = self._tf_session.run(
-                fetches=fetches,
-                feed_dict=feed_dict,
-            )
-
-            fetches = [
-                self._tf_graph.get_tensor_by_name(
-                    'training/G_loss:0',
-                ),
-                self._tf_graph.get_operation_by_name(
-                    'train/minimize_G_loss',
-                ),
-            ]
-
-            feed_dict = {
-                self._get_G_input_tensor(): self._sample_Zs(minibatch_size),
-                self._tf_graph.get_tensor_by_name(
-                    'training/logit_labels:0',
-                ): np.zeros(minibatch_size),
-            }
-
-            G_loss, _ = self._tf_session.run(
-                fetches=fetches,
-                feed_dict=feed_dict,
-            )
-
     def _get_variable_initializer(self):
         return tf.truncated_normal_initializer(
             **self._config['variable_initializer']
         )
 
     def _build_generator_network(self):
-#        minibatch_size = self._config['minibatch_size']
-        minibatch_size = None
+        minibatch_size = self._config['minibatch_size']
 
         cfg_G = self._config['generator']
         num_layers = len(cfg_G)
@@ -136,43 +76,108 @@ class DCGAN:
             elif i == num_layers - 1:
                 last_layer = True 
 
-            with tf.variable_scope(layer_name):
-                filter_size = layer_conf['filter_size']
-                stride = layer_conf['stride']
-                out_chs = layer_conf['out_chs']
+#            with tf.variable_scope(layer_name):
+#                filter_size = layer_conf['filter_size']
+#                stride = layer_conf['stride']
+#                out_chs = layer_conf['out_chs']
+#
+#                if first_layer:
+#                    in_chs = self._config['generator_input']['size']
+#                    prev_layer = tf.placeholder(
+#                        dtype=tf.float32,
+#                        shape=(minibatch_size, 1, 1, in_chs),
+#                        name='Zs',
+#                    )
+#                    out_size = filter_size
+#                else:
+#                    _, _, in_size, in_chs = prev_layer.shape.as_list()
+#                    out_size =  in_size * stride
+#
+#                W = tf.get_variable(
+#                    name='W',
+#                    shape=(filter_size,
+#                           filter_size,
+#                           out_chs,
+#                           in_chs),
+#                    initializer=self._get_variable_initializer(),
+#                )
+#
+#                pre_activation = tf.nn.conv2d_transpose(
+#                    prev_layer,
+#                    W,
+#                    output_shape=(minibatch_size,
+#                                  out_size,
+#                                  out_size,
+#                                  out_chs),
+#                    strides=(1, stride, stride, 1),
+#                    padding='SAME',
+#                    name='pre_activation',
+#                )
+#
+#                if not last_layer:
+#                    new_layer = tf.nn.relu(
+#                        batch_normalization(
+#                            input_tensor=pre_activation,
+#                            training=self.training,
+#                        ),
+#                        name='activation',
+#                    )
+#                elif last_layer:
+#                    new_layer = tf.sigmoid(pre_activation, name='output')
+#                else:
+#                    raise RuntimeError
 
+            with tf.variable_scope(layer_name):
+                
                 if first_layer:
-                    in_chs = cfg_G['generator_input']['size']
+                    in_chs = self._config['generator_input']['size']
                     prev_layer = tf.placeholder(
                         dtype=tf.float32,
-                        shape=(minibatch_size, 1, 1, in_chs),
+                        shape=(minibatch_size, in_chs),
                         name='Zs',
                     )
-                    out_size = filter_size
+                    out_size = layer_conf['out_size']
+                    out_chs = layer_conf['out_chs']
+
+                    W = tf.get_variable(
+                        name='W',
+                        shape=(in_chs, out_size * out_size * out_chs),
+                        initializer=self._get_variable_initializer(),
+                    )
+
+                    pre_activation = tf.reshape(
+                        tf.matmul(prev_layer, W),
+                        shape=(minibatch_size, out_size, out_size, out_chs),
+                        name='pre_activation',
+                    )
                 else:
+                    filter_size = layer_conf['filter_size']
+                    stride = layer_conf['stride']
+                    out_chs = layer_conf['out_chs']
+
                     _, _, in_size, in_chs = prev_layer.shape.as_list()
                     out_size =  in_size * stride
 
-                W = tf.get_variable(
-                    name='W',
-                    shape=(filter_size,
-                           filter_size,
-                           out_chs,
-                           in_chs),
-                    initializer=self._get_variable_initializer(),
-                )
+                    W = tf.get_variable(
+                        name='W',
+                        shape=(filter_size,
+                               filter_size,
+                               out_chs,
+                               in_chs),
+                        initializer=self._get_variable_initializer(),
+                    )
 
-                pre_activation = tf.nn.conv2d_transpose(
-                    prev_layer,
-                    W,
-                    output_shape=(minibatch_size,
-                                  out_size,
-                                  out_size,
-                                  out_chs),
-                    strides=(1, stride, stride, 1),
-                    padding='SAME',
-                    name='pre_activation',
-                )
+                    pre_activation = tf.nn.conv2d_transpose(
+                        prev_layer,
+                        W,
+                        output_shape=(minibatch_size,
+                                      out_size,
+                                      out_size,
+                                      out_chs),
+                        strides=(1, stride, stride, 1),
+                        padding='SAME',
+                        name='pre_activation',
+                    )
 
                 if not last_layer:
                     new_layer = tf.nn.relu(
@@ -206,11 +211,10 @@ class DCGAN:
         )
 
     def _build_discriminator_network(self):
-#        minibatch_size = self._config['minibatch_size']
-        minibatch_size = None 
+        minibatch_size = self._config['minibatch_size']
 
         cfg_D = self._config['discriminator']
-        num_layers = len(cfg_G)
+        num_layers = len(cfg_D)
 
         prev_layer = self._get_G_output_tensor()
 
@@ -251,7 +255,7 @@ class DCGAN:
                     name='pre_activation',
                 )
 
-                if fist_layer:
+                if first_layer:
                     new_layer = leaky_relu(pre_activation)
                 elif not last_layer:
                     new_layer = leaky_relu(
@@ -281,7 +285,7 @@ class DCGAN:
         )
 
     def _build_train_ops(self):
-        D_logits = self._tf_get_D_logits_tensor()
+        D_logits = self._get_D_logits_tensor()
 
         logit_labels = tf.placeholder(
             dtype=tf.float32,
@@ -309,7 +313,7 @@ class DCGAN:
         adam = tf.train.AdamOptimizer(**self._config['adam'])
 
         train_D_op = adam.minimize(
-            loss=(real_D_loss + fake_D_loss),
+            loss=D_loss,
             name='minimize_D_loss',
             var_list=self._tf_graph.get_collection(
                 name='trainable_variables',
@@ -325,6 +329,9 @@ class DCGAN:
                 scope='generator',
             )
         )
+
+    def _build_summary_ops(self):
+        pass
 
     def _load_data(self):
         dataset_name=self._config['dataset_name']
@@ -383,6 +390,94 @@ class DCGAN:
 
         return samples
         
+    def train(self):
+        if not self.training:
+            raise RuntimeError
+
+        minibatch_size = self._config['minibatch_size']
+
+        for i in range(self._config['num_training_iterations']):
+#            real_inputs = self.get_samples_from_data(minibatch_size)
+#            fake_inputs = self.generate_samples(minibatch_size)
+#            D_inputs = np.concatenate(
+#                (real_inputs, fake_inputs),
+#            )
+#            logit_labels = np.concatenate(
+#                (np.ones(minibatch_size), np.zeros(minibatch_size)),
+#            )
+#
+#            fetches = [
+#                self._tf_graph.get_tensor_by_name(
+#                    'training/D_loss:0',
+#                ),
+#                self._tf_graph.get_operation_by_name(
+#                    'train/minimize_D_loss',
+#                ),
+#            ]
+#
+#            D_input_tesnor = self._get_G_output_tensor() 
+#            feed_dict = {
+#                D_input_tensor: D_inputs,
+#                self._tf_graph.get_tensor_by_name(
+#                    'training/logit_labels:0',
+#                ): logit_labels,
+#            }
+#
+#            D_loss, _ = self._tf_session.run(
+#                fetches=fetches,
+#                feed_dict=feed_dict,
+#            )
+
+            # Train D.
+            fetches = [
+                self._tf_graph.get_tensor_by_name(
+                    'training/D_loss:0'
+                ),
+                self._tf_graph.get_operation_by_name(
+                    'train/minimize_D_loss'
+                ),
+            ]
+
+            D_input_tesnor = self._get_G_output_tensor() 
+            D_logit_label_tensor = self._tf_graph.get_tensor_by_name(
+                'training/logit_labels:0'
+            )
+
+            for inputs, logit_labels in (
+                (self.get_samples_from_data(minibatch_size),
+                 np.ones(minibatch_size)),
+                (self.generate_samples(minibatch_size),
+                 np.zeros(minibatch_size)),
+            ):
+                feed_dict = {
+                    D_input_tensor: inputs,
+                    D_logit_label_tensor: logit_labels,
+                }
+
+                D_loss, _ = self._tf_session.run(
+                    fetches=fetches,
+                    feed_dict=feed_dict,
+                )
+
+            # Train G.
+            fetches = [
+                self._tf_graph.get_tensor_by_name(
+                    'training/G_loss:0'
+                ),
+                self._tf_graph.get_operation_by_name(
+                    'train/minimize_G_loss'
+                ),
+            ]
+
+            feed_dict = {
+                self._get_G_input_tensor(): self._sample_Zs(minibatch_size),
+            }
+
+            G_loss, _ = self._tf_session.run(
+                fetches=fetches,
+                feed_dict=feed_dict,
+            )
+
 
 def batch_normalization(
     input_tensor,

@@ -2,13 +2,13 @@ dcgan_mnist = {
     'dataset_name': 'MNIST',
     'generator_input': {'low': -1.0, 'high': 1.0, 'size': 100},
     'generator': [
-        ('conv0', {'filter_size': 7, 'stride': 1, 'out_chs': 128}),
+#        ('conv0', {'filter_size': 7, 'stride': 1, 'out_chs': 128}),
+        ('fc', {'out_size': 7, 'out_chs': 128}),
         ('conv1', {'filter_size': 5, 'stride': 2, 'out_chs': 64}),
         ('conv2', {'filter_size': 5, 'stride': 2, 'out_chs': 1}),
     ],
-    'discriminator_input', {'low': 0.0, 'high': 1.0, 'size': 28, 'in_chs': 1}),
+    'discriminator_input': {'low': 0.0, 'high': 1.0, 'size': 28, 'in_chs': 1},
     'discriminator': [
-#        ('input', {'size': 28, 'in_chs': 1}),
         ('conv0', {'filter_size': 5, 'stride': 2, 'out_chs': 64}),
         ('conv1', {'filter_size': 5, 'stride': 2, 'out_chs': 128}),
         ('conv2', {'filter_size': 7, 'stride': 1, 'out_chs': 1}),
