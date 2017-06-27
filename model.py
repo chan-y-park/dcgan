@@ -56,8 +56,8 @@ class DCGAN:
                 with tf.variable_scope('training'):
                     self._build_train_ops()
 
-                with tf.variable_scope('summary'):
-                    self._build_summary_ops()
+#                with tf.variable_scope('summary'):
+#                    self._build_summary_ops()
             else:
                 with tf.variable_scope('generator'):
                     self._build_generator_network()
@@ -89,7 +89,6 @@ class DCGAN:
                 last_layer = True 
 
             with tf.variable_scope(layer_name):
-                
                 if first_layer:
                     if training:
                         cfg_G_input = self._config['generator_input']
@@ -103,6 +102,11 @@ class DCGAN:
                             dtype=tf.float32,
                             name='Zs',
                         )
+#                        # XXX
+#                        prev_layer = tf.ones(
+#                            shape=(minibatch_size, in_chs),
+#                            name='Zs',
+#                        )
                     else:
                         in_chs = self._config['generator_input']['size']
                         prev_layer = tf.placeholder(
@@ -193,28 +197,40 @@ class DCGAN:
 
         if inputs == 'real':
             image_batch = tf.train.shuffle_batch(
-                tensors=[self._data],
+                tensors=[tf.cast(self._data, dtype=tf.float32)],
                 batch_size=minibatch_size,
                 capacity=len(self._data),
                 min_after_dequeue=minibatch_size,
+                enqueue_many=True,
+                name='inputs_real'
             )
-            prev_layer = image_batch
+            new_layer = image_batch
+#            cfg_D_input = self._config['discriminator_input']
+#            input_size = cfg_D_input['size']
+#            in_chs = cfg_D_input['in_chs']
+#            new_layer = tf.placeholder(
+#                dtype=tf.float32,
+#                shape=(minibatch_size, input_size, input_size, in_chs),
+#                name='inputs_real',
+#            )
             reuse = False
         elif inputs == 'fake':
-            prev_layer = self._get_G_output_tensor()
+            new_layer = self._get_G_output_tensor()
             reuse = True
         else:
-            cfg_D_input = cfg_D['input']
+            cfg_D_input = self._config['discriminator_input']
             input_size = cfg_D_input['size']
             in_chs = cfg_D_input['in_chs']
-            prev_layer = tf.placeholder(
+            new_layer = tf.placeholder(
                 dtype=tf.float32,
                 shape=(minibatch_size, input_size, input_size, in_chs),
-                name='input',
+                name='inputs',
             )
             reuse = False
 
         for i, (layer_name, layer_conf) in enumerate(cfg_D):
+            prev_layer = new_layer
+
             first_layer = False
             last_layer = False
             if i == 0:
@@ -268,39 +284,41 @@ class DCGAN:
 #                        #shape=(-1, 1),
 #                        name='logits',
 #                    )
-                else:
-                    raise RuntimeError
+#                else:
+#                   raise RuntimeError
 
             # End of layer_name variable scope.
 
-            prev_layer = new_layer
 
-        # End of conf for loop.
+        # End of layer_conf for loop.
 
-        # XXX Just logits or plus sigmoid?
         if inputs is not None:
-            output_logits_name = 'logits_{}'.format(inputs)
+            logits_name = 'logits_{}'.format(inputs)
         else:
-            output_logits_name = 'logits'
+            logits_name = 'logits'
         new_layer = tf.reshape(
             pre_activation,
             shape=(minibatch_size, 1),
-            name=output_logits_name,
+            name=logits_name,
         )
 
-#    def _get_D_logits_tensor(self):
+    def _get_D_logits_tensor(self, inputs=None):
 #        D_output_layer_name, _ = self._config['discriminator'][-1]
-#        return self._tf_graph.get_tensor_by_name(
-#            'discriminator/{}/logits:0'.format(D_output_layer_name),
-#        )
+        if inputs is not None:
+            logits_name = 'logits_{}'.format(inputs)
+        else:
+            logits_name = 'logits'
+        return self._tf_graph.get_tensor_by_name(
+#            'discriminator/{}/{}:0'.format(
+#                D_output_layer_name, logits_name,
+            'discriminator/{}:0'.format(logits_name),
+        )
 
     def _build_train_ops(self):
         # TODO: check hyperparameters.
         adam = tf.train.AdamOptimizer(**self._config['adam'])
 
-        D_logits_real = self._tf_graph.get_tensor_by_name(
-            'discriminator/logits_real:0'
-        )
+        D_logits_real = self._get_D_logits_tensor(inputs='real')
 
         D_logit_labels_real = tf.ones_like(D_logits_real)
 
@@ -312,9 +330,7 @@ class DCGAN:
             name='D_loss_real',
         )
 
-        D_logits_fake = self._tf_graph.get_tensor_by_name(
-            'discriminator/logits_fake:0'
-        )
+        D_logits_fake = self._get_D_logits_tensor(inputs='fake')
 
         D_logit_labels_fake = tf.ones_like(D_logits_fake)
 
@@ -337,33 +353,48 @@ class DCGAN:
             )
         )
 
-        with tf.control_dependencies([train_D_op]):
-            # TODO: Check if this refreshes D logits.
-            D_logits = self._tf_graph.get_tensor_by_name(
-                'discriminator/logits_fake:0'
-            )
+#        with tf.control_dependencies([train_D_op]):
+#            # TODO: Check if this refreshes D logits.
+#            D_logits = self._get_D_logits_tensor(inputs='fake')
+#
+#            G_loss = tf.reduce_mean(
+#                tf.nn.sigmoid_cross_entropy_with_logits(
+#                    labels=tf.zeros_like(D_logits),
+#                    logits=(-D_logits),
+#                ),
+#                name='G_loss',
+#            )
+#
+#            train_G_op = adam.minimize(
+#                loss=G_loss,
+#                name='minimize_G_loss',
+#                var_list=self._tf_graph.get_collection(
+#                    name='trainable_variables',
+#                    scope='generator',
+#                )
+#            )
+#
+#        train_op = tf.group(
+#            train_D_op,
+#            train_G_op,
+#            name='train_op',
+#        )
 
-            G_loss = tf.reduce_mean(
-                tf.nn.sigmoid_cross_entropy_with_logits(
-                    labels=tf.zeros_like(D_logits),
-                    logits=(-D_logits),
-                ),
-                name='G_loss',
-            )
+        G_loss = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(
+                labels=tf.zeros_like(D_logits_fake),
+                logits=(-D_logits_fake),
+            ),
+            name='G_loss',
+        )
 
-            train_G_op = adam.minimize(
-                loss=G_loss,
-                name='minimize_G_loss',
-                var_list=self._tf_graph.get_collection(
-                    name='trainable_variables',
-                    scope='generator',
-                )
+        train_G_op = adam.minimize(
+            loss=G_loss,
+            name='minimize_G_loss',
+            var_list=self._tf_graph.get_collection(
+                name='trainable_variables',
+                scope='generator',
             )
-
-        train_op = tf.group(
-            train_D_op,
-            train_G_op,
-            name='train_op',
         )
 
     def _build_summary_ops(self):
@@ -578,15 +609,59 @@ class DCGAN:
 
         minibatch_size = self._config['minibatch_size']
 
-        for i in range(self._config['num_training_iterations']):
-            fetches = [
-                self._tf_graph.get_operation_by_name(
-                   'training/train_op' 
+        coord = tf.train.Coordinator()
+        queue_threads = tf.train.start_queue_runners(
+            sess=self._tf_session,
+            coord=coord,
+        )
+
+        try:
+            for i in range(self._config['num_training_iterations']):
+#                fetches = [
+#                    self._tf_graph.get_tensor_by_name(
+#                        'discriminator/inputs_real:0'
+#                    )
+#                ]
+#                rv = self._tf_session.run(
+#                    fetches=fetches,
+#                )
+                fetches = [
+                    self._tf_graph.get_tensor_by_name(
+                        'training/D_loss_real:0'
+                    ),
+                    self._tf_graph.get_tensor_by_name(
+                        'training/D_loss_fake:0'
+                    ),
+                    self._tf_graph.get_operation_by_name(
+                       'training/minimize_D_loss' 
+                    ),
+                ]
+                D_input_tensor = self._tf_graph.get_tensor_by_name(
+                    'discriminator/inputs_real:0'
                 )
-            ]
-            _ = self._tf_session.run(
-                fetches=fetches,
-            )
+                D_loss_real, D_loss_fake, _ = self._tf_session.run(
+                    fetches=fetches,
+                )
+                fetches = [
+                    self._tf_graph.get_tensor_by_name(
+                        'training/G_loss:0'
+                    ),
+                    self._tf_graph.get_operation_by_name(
+                       'training/minimize_G_loss' 
+                    ),
+                ]
+                G_loss, _ = self._tf_session.run(
+                    fetches=fetches,
+                )
+                rv = (D_loss_real, D_loss_fake, G_loss)
+        except tf.errors.OutOfRangeError:
+            print('Epoch limit reached.')
+        finally:
+            coord.request_stop()
+
+        coord.join(queue_threads)
+
+        return rv
 
 
 
