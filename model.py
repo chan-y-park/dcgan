@@ -2,6 +2,7 @@
 # to put everything on GPU and compare performances.
 
 import os
+import time
 
 import numpy as np
 import tensorflow as tf
@@ -13,6 +14,7 @@ class DCGAN:
         training=None,
         log_dir='logs',
         checkpoint_dir='checkpoints',
+        run_dir='runs',
         gpu_memory_fraction=None,
         gpu_memory_allow_growth=True,
     ):
@@ -20,6 +22,8 @@ class DCGAN:
             os.makedirs(log_dir)
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir)
+        if not os.path.exists(run_dir):
+            os.makedirs(run_dir)
 
         self._config = config
         self._data = None
@@ -56,8 +60,8 @@ class DCGAN:
                 with tf.variable_scope('training'):
                     self._build_train_ops()
 
-#                with tf.variable_scope('summary'):
-#                    self._build_summary_ops()
+                with tf.variable_scope('summary'):
+                    self._build_summary_ops()
             else:
                 with tf.variable_scope('generator'):
                     self._build_generator_network()
@@ -338,7 +342,11 @@ class DCGAN:
             name='D_loss_fake',
         )
 
-        D_loss = D_loss_real + D_loss_fake
+        D_loss = tf.add(
+            D_loss_real,
+            D_loss_fake,
+            name='D_loss',
+        )
 
         train_D_op = adam.minimize(
             loss=D_loss,
@@ -366,17 +374,17 @@ class DCGAN:
             )
         )
         
-        # XXX
-        for qr in self._tf_graph.get_collection('queue_runners'):
-            if qr.name == (
-                'discriminator/inputs_real/random_shuffle_queue'
-            ):
-                break
-        data_queue = qr.queue
-
-        queue_size_op = data_queue.size(
-            name='data_queue_size',
-        )
+#        # XXX
+#        for qr in self._tf_graph.get_collection('queue_runners'):
+#            if qr.name == (
+#                'discriminator/inputs_real/random_shuffle_queue'
+#            ):
+#                break
+#        data_queue = qr.queue
+#
+#        queue_size_op = data_queue.size(
+#            name='data_queue_size',
+#        )
 
 #        enqueue_data_op = data_queue.enqueue_many(
 #            self._data,
@@ -384,21 +392,60 @@ class DCGAN:
 #        )
 
     def _build_summary_ops(self):
+        D_summaries = []
         with tf.variable_scope('discriminator'):
-            tf.summary.scalar(
-                name='real_loss',
-                tensor=tf.placeholder(
-                    dtype=tf.float32,
-                    shape=(1),
-                    name='t_real_loss',
+            for input_type in ('real', 'fake'):
+                with tf.variable_scope('inputs_{}'.format(input_type)):
+                    if input_type == 'real':
+                        image_tensor =  self._tf_graph.get_tensor_by_name(
+                            'discriminator/inputs_real:0' 
+                        )
+                    else:
+                        image_tensor = self._get_G_output_tensor() 
+                    summary_image = tf.summary.image(
+                        name='input_images',
+                        tensor=image_tensor,
+                    )
+                    D_summaries.append(summary_image)
+
+                    summary_mean_output = tf.summary.scalar(
+                        name='mean_output',
+                        tensor=tf.reduce_mean(
+                            tf.sigmoid(
+                                self._get_D_logits_tensor(
+                                    inputs=input_type
+                                )
+                            )
+                        )
+                    )
+                    D_summaries.append(summary_mean_output)
+
+                    summary_loss = tf.summary.scalar(
+                        name='loss',
+                        tensor=self._tf_graph.get_tensor_by_name(
+                            'training/D_loss_{}'.format(input_type)
+                        )
+                    )
+                    D_summaries.append(summary_loss)
+
+            summary_total_loss = tf.summary.scalar(
+                name='loss',
+                tensor=self._tf_graph.get_tensor_by_name(
+                    'training/D_loss'
                 )
             )
+            D_summaries.append(summary_total_loss)
+
+        tf.summary.merge(
+            D_summaries,
+            name='discriminator_summaries',
+        )
+
+        with tf.variable_scope('generator'):
             tf.summary.scalar(
-                name='real_mean_logit',
-                tensor=tf.placeholder(
-                    dtype=tf.float32,
-                    shape=(1),
-                    name='t_real_mean_logit',
+                name='loss',
+                tensor=self._tf_graph.get_tensor_by_name(
+                    'training/G_loss'
                 )
             )
 
@@ -491,9 +538,26 @@ class DCGAN:
 
         return samples
         
-    def train(self):
+    def train(
+        self,
+        save_path=None,
+        run_name=None,
+    ):
         if not self.training:
             raise RuntimeError
+
+        if run_name is None:
+            run_name = (
+                '{:02}{:02}_{:02}{:02}{:02}'.format(*time.localtime()[1:6])
+            )
+
+        summary_writer = tf.summary.FileWriter(
+            logdis='logs/{}'.format(run_name),
+            graph=self._tf_graph,
+        )
+
+        with open('runs/{}'.format(run_name), 'w') as fp:
+            json.dump(self._config, fp)
 
         minibatch_size = self._config['minibatch_size']
 
@@ -510,48 +574,62 @@ class DCGAN:
 
         try:
             while step < max_num_steps and not coord.should_stop():
+                # Train D.
                 fetches = [
-                    self._tf_graph.get_tensor_by_name(
-                        'discriminator/inputs_real_checksum:0'
-                    ),
+#                    self._tf_graph.get_tensor_by_name(
+#                        'discriminator/inputs_real_checksum:0'
+#                    ),
                     self._tf_graph.get_tensor_by_name(
                         'training/D_loss_real:0'
                     ),
                     self._tf_graph.get_tensor_by_name(
                         'training/D_loss_fake:0'
                     ),
+                    self._tf_graph.get_tensor_by_name(
+                        'summary/discriminator_summaries:0'
+                    ),
                     self._tf_graph.get_operation_by_name(
-                       'training/minimize_D_loss' 
+                        'training/minimize_D_loss' 
                     ),
                 ]
-                (inputs_real_checksum,
-                 D_loss_real,
-                 D_loss_fake,
-                 _) = self._tf_session.run(
+                (
+#                    inputs_real_checksum,
+                    D_loss_real,
+                    D_loss_fake,
+                    D_summaries,
+                    _
+                ) = self._tf_session.run(
                     fetches=fetches,
                 )
+                summary_writer.add_summary(D_summaries)
+
+                # Train G.
                 fetches = [
                     self._tf_graph.get_tensor_by_name(
                         'training/G_loss:0'
                     ),
+                    self._tf_graph.get_tensor_by_name(
+                        'summary/generator/loss:0'
+                    ),
                     self._tf_graph.get_operation_by_name(
-                       'training/minimize_G_loss' 
+                        'training/minimize_G_loss' 
                     ),
                 ]
-                G_loss, _ = self._tf_session.run(
+                G_loss, G_summary, _ = self._tf_session.run(
                     fetches=fetches,
                 )
+                summary_writer.add_summary(G_summary)
+
                 rv = (D_loss_real, D_loss_fake, G_loss)
                 
-                #XXX
-                data_queue_size = self._tf_session.run(
-                    self._tf_graph.get_tensor_by_name(
-                        'training/data_queue_size:0'
-                    )
-                )
-                print(data_queue_size, inputs_real_checksum)
+#                #XXX
+#                data_queue_size = self._tf_session.run(
+#                    self._tf_graph.get_tensor_by_name(
+#                        'training/data_queue_size:0'
+#                    )
+#                )
+#                print(data_queue_size, inputs_real_checksum)
 
-#                print(data_queue_size, D_loss_real,)
 #
 #                if data_queue_size < minibatch_size:
 #                    print('Epoch #{} finished.'.format(epoch))
@@ -569,6 +647,8 @@ class DCGAN:
             coord.request_stop()
 
         coord.join(queue_threads)
+
+        summary_writer.close()
 
         return rv
 
