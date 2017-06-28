@@ -22,7 +22,7 @@ class DCGAN:
             os.makedirs(checkpoint_dir)
 
         self._config = config
-        self._load_data()
+        self._data = None
 
         if training is None:
             raise ValueError('Set training either to be True or False.')
@@ -196,31 +196,27 @@ class DCGAN:
         num_layers = len(cfg_D)
 
         if inputs == 'real':
-            image_batch = tf.train.shuffle_batch(
-                tensors=[tf.cast(self._data, dtype=tf.float32)],
-                batch_size=minibatch_size,
-                capacity=len(self._data),
-                min_after_dequeue=minibatch_size,
-                enqueue_many=True,
-                name='inputs_real'
-            )
-            new_layer = image_batch
-#            cfg_D_input = self._config['discriminator_input']
-#            input_size = cfg_D_input['size']
-#            in_chs = cfg_D_input['in_chs']
-#            new_layer = tf.placeholder(
-#                dtype=tf.float32,
-#                shape=(minibatch_size, input_size, input_size, in_chs),
-#                name='inputs_real',
+#            image_batch = tf.train.shuffle_batch(
+#                tensors=[tf.cast(self._data, dtype=tf.float32)],
+#                batch_size=minibatch_size,
+#                capacity=len(self._data),
+#                min_after_dequeue=minibatch_size,
+#                enqueue_many=True,
+#                name='inputs_real'
 #            )
+            new_layer = self._get_data_batch_tensor() 
+            # XXX
+            checksum = tf.reduce_mean(
+                new_layer,
+                name='inputs_real_checksum',
+            )
             reuse = False
         elif inputs == 'fake':
             new_layer = self._get_G_output_tensor()
             reuse = True
         else:
-            cfg_D_input = self._config['discriminator_input']
-            input_size = cfg_D_input['size']
-            in_chs = cfg_D_input['in_chs']
+            input_size = self._config['input_data']['size']
+            in_chs = self._config['input_data']['num_chs']
             new_layer = tf.placeholder(
                 dtype=tf.float32,
                 shape=(minibatch_size, input_size, input_size, in_chs),
@@ -353,33 +349,6 @@ class DCGAN:
             )
         )
 
-#        with tf.control_dependencies([train_D_op]):
-#            # TODO: Check if this refreshes D logits.
-#            D_logits = self._get_D_logits_tensor(inputs='fake')
-#
-#            G_loss = tf.reduce_mean(
-#                tf.nn.sigmoid_cross_entropy_with_logits(
-#                    labels=tf.zeros_like(D_logits),
-#                    logits=(-D_logits),
-#                ),
-#                name='G_loss',
-#            )
-#
-#            train_G_op = adam.minimize(
-#                loss=G_loss,
-#                name='minimize_G_loss',
-#                var_list=self._tf_graph.get_collection(
-#                    name='trainable_variables',
-#                    scope='generator',
-#                )
-#            )
-#
-#        train_op = tf.group(
-#            train_D_op,
-#            train_G_op,
-#            name='train_op',
-#        )
-
         G_loss = tf.reduce_mean(
             tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=tf.zeros_like(D_logits_fake),
@@ -396,6 +365,23 @@ class DCGAN:
                 scope='generator',
             )
         )
+        
+        # XXX
+        for qr in self._tf_graph.get_collection('queue_runners'):
+            if qr.name == (
+                'discriminator/inputs_real/random_shuffle_queue'
+            ):
+                break
+        data_queue = qr.queue
+
+        queue_size_op = data_queue.size(
+            name='data_queue_size',
+        )
+
+#        enqueue_data_op = data_queue.enqueue_many(
+#            self._data,
+#            name='enqueue_data',
+#        )
 
     def _build_summary_ops(self):
         with tf.variable_scope('discriminator'):
@@ -416,8 +402,10 @@ class DCGAN:
                 )
             )
 
-    def _load_data(self):
+    def _get_data_batch_tensor(self):
         dataset_name=self._config['dataset_name']
+        minibatch_size = self._config['minibatch_size']
+        data_batch_name = 'inputs_real'
 
         if dataset_name == 'MNIST':
             ((x_train, y_train),
@@ -430,9 +418,35 @@ class DCGAN:
                 'x_size': len(x_train),
                 'y_size': len(y_train),
             }
-            self._data = np.reshape(x_train, (-1, 28, 28, 1))
+#            data = np.concatenate((x_train, x_test))
+            # XXX
+            data = x_train[:200]
+            data = np.array(
+                (data / np.iinfo(np.uint8).max),
+                dtype=np.float32,
+            )
+            self._data = np.reshape(data, (-1, 28, 28, 1))
+            data_batch = tf.train.shuffle_batch(
+                tensors=[self._data],
+                batch_size=minibatch_size,
+#                capacity=len(data),
+                capacity=(100 * minibatch_size),
+                min_after_dequeue=minibatch_size,
+                #min_after_dequeue=0,
+                enqueue_many=True,
+                name=data_batch_name,
+            )
+#            for qr in self._tf_graph.get_collection('queue_runners'):
+#                if qr.name == (
+#                    'discriminator/{}/random_shuffle_queue'
+#                    .format(data_batch_name)
+#                ):
+#                    break
+#            self._data_queue = qr.queue 
         else:
             raise ValueError('Unknown dataset name: {}.'.format(dataset_name))
+
+        return data_batch
 
     def get_samples_from_data(self, minibatch_size=1):
         dataset_name=self._config['dataset_name']
@@ -477,155 +491,29 @@ class DCGAN:
 
         return samples
         
-#    def train(self):
-#        if not self.training:
-#            raise RuntimeError
-#
-#        minibatch_size = self._config['minibatch_size']
-#
-#        for i in range(self._config['num_training_iterations']):
-##            real_inputs = self.get_samples_from_data(minibatch_size)
-##            fake_inputs = self.generate_samples(minibatch_size)
-##            D_inputs = np.concatenate(
-##                (real_inputs, fake_inputs),
-##            )
-##            logit_labels = np.concatenate(
-##                (np.ones(minibatch_size), np.zeros(minibatch_size)),
-##            )
-##
-##            fetches = [
-##                self._tf_graph.get_tensor_by_name(
-##                    'training/D_loss:0',
-##                ),
-##                self._tf_graph.get_operation_by_name(
-##                    'train/minimize_D_loss',
-##                ),
-##            ]
-##
-##            D_input_tesnor = self._get_G_output_tensor() 
-##            feed_dict = {
-##                D_input_tensor: D_inputs,
-##                self._tf_graph.get_tensor_by_name(
-##                    'training/logit_labels:0',
-##                ): logit_labels,
-##            }
-##
-##            D_loss, _ = self._tf_session.run(
-##                fetches=fetches,
-##                feed_dict=feed_dict,
-##            )
-#
-#            # Train D.
-#            fetches = [
-#                self._tf_graph.get_tensor_by_name(
-#                    'training/D_loss:0'
-#                ),
-#                self._get_D_logits_tensor(),
-#                self._tf_graph.get_operation_by_name(
-#                    'training/minimize_D_loss'
-#                ),
-#            ]
-#
-#            # TODO: Study paper if optimizing
-#            # D_loss_real and D_loss_fake separately
-#            # is equivalent to optimizing their sum.
-#
-#            D_input_tensor = self._get_G_output_tensor() 
-#            D_logit_labels_tensor = self._tf_graph.get_tensor_by_name(
-#                'training/logit_labels:0'
-#            )
-#            D_logit_labels_shape = D_logit_labels_tensor.shape.as_list()
-#
-#            # Real samples.
-#            feed_dict = {
-#                D_input_tensor: self.get_samples_from_data(minibatch_size),
-#                D_logit_labels_tensor: np.ones(D_logit_labels_shape),
-#            }
-#            D_loss_real, D_logits_real, _ = self._tf_session.run(
-#                fetches=fetches,
-#                feed_dict=feed_dict,
-#            )
-#            tf.assign(
-#                self._tf_graph.get_tensor_by_name(
-#                    'summary/discriminator/real_loss:0'
-#                ),
-#                D_loss_real,
-#            )
-#            tf.assign(
-#                self._tf_graph.get_tensor_by_name(
-#                    'summary/discriminator/real_mean_logit:0'
-#                ),
-#                np.mean(D_logits_real),
-#            )
-#
-#            for inputs, logit_labels in (
-#                (,
-#                 ),
-#                (self.generate_samples(),
-#                 np.zeros(D_logit_labels_shape)),
-#            ):
-#                feed_dict = {
-#                    D_input_tensor: inputs,
-#                    D_logit_labels_tensor: logit_labels,
-#                }
-#
-##            for inputs, logit_labels in (
-##                (self.get_samples_from_data(minibatch_size),
-##                 np.ones(D_logit_labels_shape)),
-##                (self.generate_samples(),
-##                 np.zeros(D_logit_labels_shape)),
-##            ):
-##                feed_dict = {
-##                    D_input_tensor: inputs,
-##                    D_logit_labels_tensor: logit_labels,
-##                }
-##
-##                D_loss, _ = self._tf_session.run(
-##                    fetches=fetches,
-##                    feed_dict=feed_dict,
-##                )
-#            # Train G.
-#            fetches = [
-#                self._tf_graph.get_tensor_by_name(
-#                    'training/G_loss:0'
-#                ),
-#                self._tf_graph.get_operation_by_name(
-#                    'training/minimize_G_loss'
-#                ),
-#            ]
-#
-#            feed_dict = {
-#                self._get_G_input_tensor(): self._sample_Zs(minibatch_size),
-#            }
-#
-#            G_loss, _ = self._tf_session.run(
-#                fetches=fetches,
-#                feed_dict=feed_dict,
-#            )
-
     def train(self):
         if not self.training:
             raise RuntimeError
 
         minibatch_size = self._config['minibatch_size']
 
+        print('Starting data input queue...')
         coord = tf.train.Coordinator()
         queue_threads = tf.train.start_queue_runners(
             sess=self._tf_session,
             coord=coord,
         )
+        epoch = 0
+        step = 0
+        max_num_steps = self._config['num_training_iterations']
+#        max_num_epochs = self._config['num_training_epochs']
 
         try:
-            for i in range(self._config['num_training_iterations']):
-#                fetches = [
-#                    self._tf_graph.get_tensor_by_name(
-#                        'discriminator/inputs_real:0'
-#                    )
-#                ]
-#                rv = self._tf_session.run(
-#                    fetches=fetches,
-#                )
+            while step < max_num_steps and not coord.should_stop():
                 fetches = [
+                    self._tf_graph.get_tensor_by_name(
+                        'discriminator/inputs_real_checksum:0'
+                    ),
                     self._tf_graph.get_tensor_by_name(
                         'training/D_loss_real:0'
                     ),
@@ -636,10 +524,10 @@ class DCGAN:
                        'training/minimize_D_loss' 
                     ),
                 ]
-                D_input_tensor = self._tf_graph.get_tensor_by_name(
-                    'discriminator/inputs_real:0'
-                )
-                D_loss_real, D_loss_fake, _ = self._tf_session.run(
+                (inputs_real_checksum,
+                 D_loss_real,
+                 D_loss_fake,
+                 _) = self._tf_session.run(
                     fetches=fetches,
                 )
                 fetches = [
@@ -654,15 +542,35 @@ class DCGAN:
                     fetches=fetches,
                 )
                 rv = (D_loss_real, D_loss_fake, G_loss)
+                
+                #XXX
+                data_queue_size = self._tf_session.run(
+                    self._tf_graph.get_tensor_by_name(
+                        'training/data_queue_size:0'
+                    )
+                )
+                print(data_queue_size, inputs_real_checksum)
+
+#                print(data_queue_size, D_loss_real,)
+#
+#                if data_queue_size < minibatch_size:
+#                    print('Epoch #{} finished.'.format(epoch))
+#                    epoch += 1
+#                    self._tf_session.run(
+#                        self._tf_graph.get_operation_by_name(
+#                            'training/enqueue_data',
+#                        )
+#                    )
+
+                step += 1
         except tf.errors.OutOfRangeError:
-            print('Epoch limit reached.')
+            raise RuntimeError
         finally:
             coord.request_stop()
 
         coord.join(queue_threads)
 
         return rv
-
 
 
 def batch_normalization(
