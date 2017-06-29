@@ -3,6 +3,7 @@
 
 import os
 import time
+import json
 
 import numpy as np
 import tensorflow as tf
@@ -17,6 +18,7 @@ class DCGAN:
         run_dir='runs',
         gpu_memory_fraction=None,
         gpu_memory_allow_growth=True,
+        saver_var_list=None,
     ):
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
@@ -67,6 +69,8 @@ class DCGAN:
                     self._build_generator_network()
                 with tf.variable_scope('discriminator'):
                     self._build_discriminator_network()
+
+            self._tf_saver = tf.train.Saver(var_list=saver_var_list)
 
             self._tf_session = tf.Session(config=self._tf_config)
             self._tf_session.run(tf.global_variables_initializer())
@@ -200,20 +204,12 @@ class DCGAN:
         num_layers = len(cfg_D)
 
         if inputs == 'real':
-#            image_batch = tf.train.shuffle_batch(
-#                tensors=[tf.cast(self._data, dtype=tf.float32)],
-#                batch_size=minibatch_size,
-#                capacity=len(self._data),
-#                min_after_dequeue=minibatch_size,
-#                enqueue_many=True,
-#                name='inputs_real'
-#            )
             new_layer = self._get_data_batch_tensor() 
-            # XXX
-            checksum = tf.reduce_mean(
-                new_layer,
-                name='inputs_real_checksum',
-            )
+#            # XXX
+#            checksum = tf.reduce_mean(
+#                new_layer,
+#                name='inputs_real_checksum',
+#            )
             reuse = False
         elif inputs == 'fake':
             new_layer = self._get_G_output_tensor()
@@ -332,7 +328,7 @@ class DCGAN:
 
         D_logits_fake = self._get_D_logits_tensor(inputs='fake')
 
-        D_logit_labels_fake = tf.ones_like(D_logits_fake)
+        D_logit_labels_fake = tf.zeros_like(D_logits_fake)
 
         D_loss_fake = tf.reduce_mean(
             tf.nn.sigmoid_cross_entropy_with_logits(
@@ -373,23 +369,6 @@ class DCGAN:
                 scope='generator',
             )
         )
-        
-#        # XXX
-#        for qr in self._tf_graph.get_collection('queue_runners'):
-#            if qr.name == (
-#                'discriminator/inputs_real/random_shuffle_queue'
-#            ):
-#                break
-#        data_queue = qr.queue
-#
-#        queue_size_op = data_queue.size(
-#            name='data_queue_size',
-#        )
-
-#        enqueue_data_op = data_queue.enqueue_many(
-#            self._data,
-#            name='enqueue_data',
-#        )
 
     def _build_summary_ops(self):
         D_summaries = []
@@ -423,7 +402,7 @@ class DCGAN:
                     summary_loss = tf.summary.scalar(
                         name='loss',
                         tensor=self._tf_graph.get_tensor_by_name(
-                            'training/D_loss_{}'.format(input_type)
+                            'training/D_loss_{}:0'.format(input_type)
                         )
                     )
                     D_summaries.append(summary_loss)
@@ -431,7 +410,7 @@ class DCGAN:
             summary_total_loss = tf.summary.scalar(
                 name='loss',
                 tensor=self._tf_graph.get_tensor_by_name(
-                    'training/D_loss'
+                    'training/D_loss:0'
                 )
             )
             D_summaries.append(summary_total_loss)
@@ -445,7 +424,7 @@ class DCGAN:
             tf.summary.scalar(
                 name='loss',
                 tensor=self._tf_graph.get_tensor_by_name(
-                    'training/G_loss'
+                    'training/G_loss:0'
                 )
             )
 
@@ -546,13 +525,17 @@ class DCGAN:
         if not self.training:
             raise RuntimeError
 
+        if save_path is not None:
+            self._tf_saver.restore(self._tf_session, save_path)
+            step = get_step_from_checkpoint(save_path)
+
         if run_name is None:
             run_name = (
                 '{:02}{:02}_{:02}{:02}{:02}'.format(*time.localtime()[1:6])
             )
 
         summary_writer = tf.summary.FileWriter(
-            logdis='logs/{}'.format(run_name),
+            logdir='logs/{}'.format(run_name),
             graph=self._tf_graph,
         )
 
@@ -568,12 +551,14 @@ class DCGAN:
             coord=coord,
         )
         epoch = 0
-        step = 0
+        step = 1
         max_num_steps = self._config['num_training_iterations']
 #        max_num_epochs = self._config['num_training_epochs']
+        num_steps_display = max_num_steps // 100
+        num_steps_save = max_num_steps // 10
 
         try:
-            while step < max_num_steps and not coord.should_stop():
+            while step <= max_num_steps and not coord.should_stop():
                 # Train D.
                 fetches = [
 #                    self._tf_graph.get_tensor_by_name(
@@ -586,7 +571,8 @@ class DCGAN:
                         'training/D_loss_fake:0'
                     ),
                     self._tf_graph.get_tensor_by_name(
-                        'summary/discriminator_summaries:0'
+                        'summary/discriminator_summaries/'
+                        'discriminator_summaries:0'
                     ),
                     self._tf_graph.get_operation_by_name(
                         'training/minimize_D_loss' 
@@ -601,7 +587,7 @@ class DCGAN:
                 ) = self._tf_session.run(
                     fetches=fetches,
                 )
-                summary_writer.add_summary(D_summaries)
+                summary_writer.add_summary(D_summaries, step)
 
                 # Train G.
                 fetches = [
@@ -618,39 +604,36 @@ class DCGAN:
                 G_loss, G_summary, _ = self._tf_session.run(
                     fetches=fetches,
                 )
-                summary_writer.add_summary(G_summary)
-
-                rv = (D_loss_real, D_loss_fake, G_loss)
+                summary_writer.add_summary(G_summary, step)
                 
-#                #XXX
-#                data_queue_size = self._tf_session.run(
-#                    self._tf_graph.get_tensor_by_name(
-#                        'training/data_queue_size:0'
-#                    )
-#                )
-#                print(data_queue_size, inputs_real_checksum)
+                if step % num_steps_display == 0:
+                    print(
+                        'step {}: '
+                        'D_loss_real = {:g}, '
+                        'D_loss_fake = {:g}, '
+                        'G_loss = {:g}.'
+                        .format(step, D_loss_real, D_loss_fake, G_loss)
+                    )
 
-#
-#                if data_queue_size < minibatch_size:
-#                    print('Epoch #{} finished.'.format(epoch))
-#                    epoch += 1
-#                    self._tf_session.run(
-#                        self._tf_graph.get_operation_by_name(
-#                            'training/enqueue_data',
-#                        )
-#                    )
+                if step % num_steps_save == 0:
+                    save_path = self._tf_saver.save(
+                        self._tf_session,
+                        'checkpoints/{}'.format(run_name),
+                        step,
+                    )
+                    print('checkpoint saved at {}'.format(save_path))
 
                 step += 1
+
         except tf.errors.OutOfRangeError:
             raise RuntimeError
+
         finally:
             coord.request_stop()
 
         coord.join(queue_threads)
 
         summary_writer.close()
-
-        return rv
 
 
 def batch_normalization(
@@ -743,3 +726,5 @@ def leaky_relu(x, alpha=0.2):
         name='leaky_relu',
     )
 
+def get_step_from_checkpoint(save_path):
+    return int(save_path.split('-')[-1])
