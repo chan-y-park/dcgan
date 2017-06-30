@@ -1,4 +1,4 @@
-# TODO: continue training from checkpoint / generate samples from checkpoint.
+# TODO: it takes while to initialize the input queue; tune capacity, etc. 
 
 import os
 import time
