@@ -17,7 +17,7 @@ mnist = {
         'learning_rate': 0.0002,
         'beta1': 0.5,
     },
-    'num_training_iterations': 10000,
+    'num_training_iterations': 100000,
 #    'num_training_epochs': 100,
     'variable_initializer': {'mean': 0, 'stddev': 0.02},
     'input_data': {
@@ -26,4 +26,9 @@ mnist = {
         'train_size': 60000,
         'test_size': 10000,
     },
+    'training': {
+        'max_num_steps': 10 ** 5,
+        'num_steps_display': 10 ** 3,
+        'num_steps_save': 10 ** 4,
+    }
 }

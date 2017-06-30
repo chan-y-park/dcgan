@@ -1,5 +1,4 @@
-# TODO: Use TF queue & build a single train op
-# to put everything on GPU and compare performances.
+# TODO: continue training from checkpoint / generate samples from checkpoint.
 
 import os
 import time
@@ -8,32 +7,37 @@ import json
 import numpy as np
 import tensorflow as tf
 
+LOG_DIR = 'logs'
+CHECKPOINT_DIR = 'checkpoints'
+CFG_DIR = 'configs'
+
 class DCGAN:
     def __init__(
         self,
         config=None,
         training=None,
-        log_dir='logs',
-        checkpoint_dir='checkpoints',
-        run_dir='runs',
         gpu_memory_fraction=None,
         gpu_memory_allow_growth=True,
+        minibatch_size=None,
+        save_path=None,
         saver_var_list=None,
     ):
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        if not os.path.exists(checkpoint_dir):
-            os.makedirs(checkpoint_dir)
-        if not os.path.exists(run_dir):
-            os.makedirs(run_dir)
+        if not os.path.exists(LOG_DIR):
+            os.makedirs(LOG_DIR)
+        if not os.path.exists(CHECKPOINT_DIR):
+            os.makedirs(CHECKPOINT_DIR)
+        if not os.path.exists(CFG_DIR):
+            os.makedirs(CFG_DIR)
 
         self._config = config
+        if minibatch_size is not None:
+            self._config['minibatch_size'] = minibatch_size
         self._data = None
 
         if training is None:
             raise ValueError('Set training either to be True or False.')
         else:
-            self.training = training
+            self._training = training
 
         self._tf_summary = {}
         self._tf_session = None
@@ -47,11 +51,9 @@ class DCGAN:
 
         self._tf_graph = tf.Graph()
         with self._tf_graph.as_default():
-            if self.training:
+            if self._training:
                 with tf.variable_scope('generator'):
-                    self._build_generator_network(
-                        training=self.training,
-                    )
+                    self._build_generator_network()
                 with tf.variable_scope('discriminator'):
                     self._build_discriminator_network(
                         inputs='real',
@@ -70,17 +72,22 @@ class DCGAN:
                 with tf.variable_scope('discriminator'):
                     self._build_discriminator_network()
 
-            self._tf_saver = tf.train.Saver(var_list=saver_var_list)
-
             self._tf_session = tf.Session(config=self._tf_config)
             self._tf_session.run(tf.global_variables_initializer())
+
+            self._tf_saver = tf.train.Saver(var_list=saver_var_list)
+            if save_path is not None:
+                self._tf_saver.restore(self._tf_session, save_path)
+                self._step = get_step_from_checkpoint(save_path)
+            else:
+                self._step = None
 
     def _get_variable_initializer(self):
         return tf.truncated_normal_initializer(
             **self._config['variable_initializer']
         )
 
-    def _build_generator_network(self, training=False):
+    def _build_generator_network(self):
         minibatch_size = self._config['minibatch_size']
 
         cfg_G = self._config['generator']
@@ -98,7 +105,7 @@ class DCGAN:
 
             with tf.variable_scope(layer_name):
                 if first_layer:
-                    if training:
+                    if self._training:
                         cfg_G_input = self._config['generator_input']
                         low = cfg_G_input['low']
                         high = cfg_G_input['high']
@@ -110,11 +117,6 @@ class DCGAN:
                             dtype=tf.float32,
                             name='Zs',
                         )
-#                        # XXX
-#                        prev_layer = tf.ones(
-#                            shape=(minibatch_size, in_chs),
-#                            name='Zs',
-#                        )
                     else:
                         in_chs = self._config['generator_input']['size']
                         prev_layer = tf.placeholder(
@@ -170,7 +172,7 @@ class DCGAN:
                     new_layer = tf.nn.relu(
                         batch_normalization(
                             input_tensor=pre_activation,
-                            training=self.training,
+                            training=self._training,
                         ),
                         name='activation',
                     )
@@ -269,22 +271,11 @@ class DCGAN:
                     new_layer = leaky_relu(
                         batch_normalization(
                             input_tensor=pre_activation,
-                            training=self.training,
+                            training=self._training,
                         ),
                     )
-#                elif last_layer:
-#                    # XXX Just logits or plus sigmoid?
-#                    new_layer = tf.reshape(
-#                        pre_activation,
-#                        shape=(minibatch_size, 1),
-#                        #shape=(-1, 1),
-#                        name='logits',
-#                    )
-#                else:
-#                   raise RuntimeError
 
             # End of layer_name variable scope.
-
 
         # End of layer_conf for loop.
 
@@ -299,14 +290,11 @@ class DCGAN:
         )
 
     def _get_D_logits_tensor(self, inputs=None):
-#        D_output_layer_name, _ = self._config['discriminator'][-1]
         if inputs is not None:
             logits_name = 'logits_{}'.format(inputs)
         else:
             logits_name = 'logits'
         return self._tf_graph.get_tensor_by_name(
-#            'discriminator/{}/{}:0'.format(
-#                D_output_layer_name, logits_name,
             'discriminator/{}:0'.format(logits_name),
         )
 
@@ -444,9 +432,7 @@ class DCGAN:
                 'x_size': len(x_train),
                 'y_size': len(y_train),
             }
-#            data = np.concatenate((x_train, x_test))
-            # XXX
-            data = x_train[:200]
+            data = np.concatenate((x_train, x_test))
             data = np.array(
                 (data / np.iinfo(np.uint8).max),
                 dtype=np.float32,
@@ -455,20 +441,12 @@ class DCGAN:
             data_batch = tf.train.shuffle_batch(
                 tensors=[self._data],
                 batch_size=minibatch_size,
-#                capacity=len(data),
-                capacity=(100 * minibatch_size),
+                capacity=len(data),
+#                capacity=(100 * minibatch_size),
                 min_after_dequeue=minibatch_size,
-                #min_after_dequeue=0,
                 enqueue_many=True,
                 name=data_batch_name,
             )
-#            for qr in self._tf_graph.get_collection('queue_runners'):
-#                if qr.name == (
-#                    'discriminator/{}/random_shuffle_queue'
-#                    .format(data_batch_name)
-#                ):
-#                    break
-#            self._data_queue = qr.queue 
         else:
             raise ValueError('Unknown dataset name: {}.'.format(dataset_name))
 
@@ -503,11 +481,15 @@ class DCGAN:
         )
         return Zs
 
-    def generate_samples(self):
-        minibatch_size = self._config['minibatch_size']
+    def generate_samples(self, minibatch_size=1, Zs=None):
+ #       minibatch_size = self._config['minibatch_size']
+        if Zs is None:
+            Zs = self._sample_Zs(minibatch_size)
+
+        assert(len(Zs) == minibatch_size)
 
         feed_dict = {
-            self._get_G_input_tensor(): self._sample_Zs(minibatch_size)
+            self._get_G_input_tensor(): Zs,
         }
 
         samples = self._tf_session.run(
@@ -519,15 +501,14 @@ class DCGAN:
         
     def train(
         self,
-        save_path=None,
         run_name=None,
+        max_num_steps=None,
+        additional_num_steps=None,
     ):
-        if not self.training:
+        if not self._training:
             raise RuntimeError
 
-        if save_path is not None:
-            self._tf_saver.restore(self._tf_session, save_path)
-            step = get_step_from_checkpoint(save_path)
+        cfg_training = self._config['training']
 
         if run_name is None:
             run_name = (
@@ -535,11 +516,11 @@ class DCGAN:
             )
 
         summary_writer = tf.summary.FileWriter(
-            logdir='logs/{}'.format(run_name),
+            logdir='{}/{}'.format(LOG_DIR, run_name),
             graph=self._tf_graph,
         )
 
-        with open('runs/{}'.format(run_name), 'w') as fp:
+        with open('{}/{}'.format(CFG_DIR, run_name), 'w') as fp:
             json.dump(self._config, fp)
 
         minibatch_size = self._config['minibatch_size']
@@ -551,14 +532,17 @@ class DCGAN:
             coord=coord,
         )
         epoch = 0
-        step = 1
-        max_num_steps = self._config['num_training_iterations']
-#        max_num_epochs = self._config['num_training_epochs']
-        num_steps_display = max_num_steps // 100
-        num_steps_save = max_num_steps // 10
+        if self._step is None:
+            self._step = 1
+        if max_num_steps is None:
+            max_num_steps = cfg_training['max_num_steps']
+        if additional_num_steps is not None:
+            max_num_steps += additional_num_steps
+        num_steps_display = cfg_training['num_steps_display']
+        num_steps_save = cfg_training['num_steps_save']
 
         try:
-            while step <= max_num_steps and not coord.should_stop():
+            while self._step <= max_num_steps and not coord.should_stop():
                 # Train D.
                 fetches = [
 #                    self._tf_graph.get_tensor_by_name(
@@ -587,7 +571,7 @@ class DCGAN:
                 ) = self._tf_session.run(
                     fetches=fetches,
                 )
-                summary_writer.add_summary(D_summaries, step)
+                summary_writer.add_summary(D_summaries, self._step)
 
                 # Train G.
                 fetches = [
@@ -604,26 +588,26 @@ class DCGAN:
                 G_loss, G_summary, _ = self._tf_session.run(
                     fetches=fetches,
                 )
-                summary_writer.add_summary(G_summary, step)
+                summary_writer.add_summary(G_summary, self._step)
                 
-                if step % num_steps_display == 0:
+                if self._step % num_steps_display == 0:
                     print(
                         'step {}: '
                         'D_loss_real = {:g}, '
                         'D_loss_fake = {:g}, '
                         'G_loss = {:g}.'
-                        .format(step, D_loss_real, D_loss_fake, G_loss)
+                        .format(self._step, D_loss_real, D_loss_fake, G_loss)
                     )
 
-                if step % num_steps_save == 0:
+                if self._step % num_steps_save == 0:
                     save_path = self._tf_saver.save(
                         self._tf_session,
                         'checkpoints/{}'.format(run_name),
-                        step,
+                        self._step,
                     )
                     print('checkpoint saved at {}'.format(save_path))
 
-                step += 1
+                self._step += 1
 
         except tf.errors.OutOfRangeError:
             raise RuntimeError
