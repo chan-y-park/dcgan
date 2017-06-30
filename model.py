@@ -39,6 +39,8 @@ class DCGAN:
         else:
             self._training = training
 
+        self._load_data()
+
         self._tf_summary = {}
         self._tf_session = None
 
@@ -416,10 +418,8 @@ class DCGAN:
                 )
             )
 
-    def _get_data_batch_tensor(self):
+    def _load_data(self):
         dataset_name=self._config['dataset_name']
-        minibatch_size = self._config['minibatch_size']
-        data_batch_name = 'inputs_real'
 
         if dataset_name == 'MNIST':
             ((x_train, y_train),
@@ -438,6 +438,29 @@ class DCGAN:
                 dtype=np.float32,
             )
             self._data = np.reshape(data, (-1, 28, 28, 1))
+
+    def _get_data_batch_tensor(self):
+        dataset_name=self._config['dataset_name']
+        minibatch_size = self._config['minibatch_size']
+        data_batch_name = 'inputs_real'
+
+        if dataset_name == 'MNIST':
+#            ((x_train, y_train),
+#             (x_test, y_test)) = tf.contrib.keras.datasets.mnist.load_data()
+#            self._mnist_data = {
+#                'x_train': x_train,
+#                'y_train': y_train,
+#                'x_test': x_test,
+#                'y_test': y_test,
+#                'x_size': len(x_train),
+#                'y_size': len(y_train),
+#            }
+#            data = np.concatenate((x_train, x_test))
+#            data = np.array(
+#                (data / np.iinfo(np.uint8).max),
+#                dtype=np.float32,
+#            )
+#            self._data = np.reshape(data, (-1, 28, 28, 1))
             data_batch = tf.train.shuffle_batch(
                 tensors=[self._data],
                 batch_size=minibatch_size,
