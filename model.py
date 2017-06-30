@@ -1,4 +1,6 @@
 # TODO: it takes while to initialize the input queue; tune capacity, etc. 
+# See tf-models cifar10 and implement a proper input queue
+# without loading the entire file, as it causes log files to be too large.
 
 import os
 import time
@@ -437,35 +439,37 @@ class DCGAN:
                 (data / np.iinfo(np.uint8).max),
                 dtype=np.float32,
             )
-            self._data = np.reshape(data, (-1, 28, 28, 1))
+#            self._data = np.reshape(data, (-1, 28, 28, 1))
+            self._data = data[:,:,:,np.newaxis]
+        elif dataset_name == 'SVHN':
+            from scipy.io import loadmat
+            try:
+                svhn_train = loadmat('datasets/SVHN/train_32x32.mat')
+                svhn_test = loadmat('datasets/SVHN/test_32x32.mat')
+            except FileNotFoundError:
+                print('no *.mat file found at datasets/SVHN.')
+                raise RuntimeError
+            svhn_train_X = np.moveaxis(svhn_train['X'], -1, 0)
+            svhn_test_X = np.moveaxis(svhn_test['X'], -1, 0)
+            data = np.concatenate((svhn_train_X, svhn_test_X))
+            self._data = np.array(
+                (data / np.iinfo(np.uint8).max),
+                dtype=np.float32,
+            )
 
     def _get_data_batch_tensor(self):
         dataset_name=self._config['dataset_name']
         minibatch_size = self._config['minibatch_size']
         data_batch_name = 'inputs_real'
 
-        if dataset_name == 'MNIST':
-#            ((x_train, y_train),
-#             (x_test, y_test)) = tf.contrib.keras.datasets.mnist.load_data()
-#            self._mnist_data = {
-#                'x_train': x_train,
-#                'y_train': y_train,
-#                'x_test': x_test,
-#                'y_test': y_test,
-#                'x_size': len(x_train),
-#                'y_size': len(y_train),
-#            }
-#            data = np.concatenate((x_train, x_test))
-#            data = np.array(
-#                (data / np.iinfo(np.uint8).max),
-#                dtype=np.float32,
-#            )
-#            self._data = np.reshape(data, (-1, 28, 28, 1))
+        if dataset_name == 'MNIST' or dataset_name == 'SVHN':
             data_batch = tf.train.shuffle_batch(
-                tensors=[self._data],
+#                tensors=[self._data],
+                # XXX
+                tensors=[self._data[:1000]],
                 batch_size=minibatch_size,
-                capacity=len(data),
-#                capacity=(100 * minibatch_size),
+#                capacity=len(data),
+                capacity=(100 * minibatch_size),
                 min_after_dequeue=minibatch_size,
                 enqueue_many=True,
                 name=data_batch_name,
