@@ -5,6 +5,7 @@
 import os
 import time
 import json
+import threading
 
 import numpy as np
 import tensorflow as tf
@@ -45,6 +46,7 @@ class DCGAN:
 
         self._tf_summary = {}
         self._tf_session = None
+        self._tf_coordinator = tf.train.Coordinator()
 
         self._tf_config = tf.ConfigProto()
         self._tf_config.gpu_options.allow_growth = gpu_memory_allow_growth 
@@ -56,6 +58,8 @@ class DCGAN:
         self._tf_graph = tf.Graph()
         with self._tf_graph.as_default():
             if self._training:
+                with tf.variable_scope('input_queue'):
+                    self._build_input_queue()
                 with tf.variable_scope('generator'):
                     self._build_generator_network()
                 with tf.variable_scope('discriminator'):
@@ -90,6 +94,73 @@ class DCGAN:
         return tf.truncated_normal_initializer(
             **self._config['variable_initializer']
         )
+
+    def _build_input_queue(self):
+        input_size = self._config['input_data']['size']
+        in_chs = self._config['input_data']['num_chs']
+        minibatch_size = self._config['minibatch_size']
+
+        queue_inputs = tf.placeholder(
+            dtype=tf.float32,
+            shape=(None, input_size, input_size, in_chs),
+            name='inputs',
+        )
+
+        queue_capacity = 1000
+
+        queue = tf.FIFOQueue(
+            capacity=queue_capacity,
+            dtypes=[tf.float32],
+            shapes=[(input_size, input_size, in_chs)],
+            name='real_image_queue',
+        )
+
+        close_op = queue.close(
+            cancel_pending_enqueues=True,
+            name='close_op',
+        )
+
+        enqueue_op = queue.enqueue_many(
+            queue_inputs,
+            name='enqueue_op',
+        )
+
+        dequeued_tensors = queue.dequeue_many(
+            minibatch_size,
+            name='dequeued_tensors',
+        )
+
+    def _enqueue_thread(self):
+        num_data = len(self._data)
+        i = 0
+        num_elements = 100
+        enqueue_op = self._tf_graph.get_operation_by_name(
+            'input_queue/enqueue_op'
+        )
+        queue_inputs = self._tf_graph.get_tensor_by_name(
+            'input_queue/inputs:0' 
+        )
+
+        np.random.shuffle(self._data)
+
+        while not self._tf_coordinator.should_stop():
+            if (i + num_elements) <= num_data:
+                data_to_enqueue = self._data[i:(i + num_elements)]
+            else:
+                data_to_enqueue = self._data[i:]
+                i = num_elements - (num_data - i)
+                data_to_enqueue = np.concatenate(
+                    (data_to_enqueue, self._data[:i]),
+                )
+                np.random.shuffle(self._data)
+            try: 
+                self._tf_session.run(
+                    enqueue_op,
+                    feed_dict={queue_inputs: data_to_enqueue}
+                )
+            except tf.errors.CancelledError:
+#                print('Input queue closed.')
+                pass
 
     def _build_generator_network(self):
         minibatch_size = self._config['minibatch_size']
@@ -210,12 +281,18 @@ class DCGAN:
         num_layers = len(cfg_D)
 
         if inputs == 'real':
-            new_layer = self._get_data_batch_tensor() 
+#            new_layer = self._get_data_batch_tensor() 
 #            # XXX
 #            checksum = tf.reduce_mean(
 #                new_layer,
 #                name='inputs_real_checksum',
 #            )
+            new_layer = tf.identity(
+                self._tf_graph.get_tensor_by_name(
+                    'input_queue/dequeued_tensors:0'
+                ),
+                name='inputs_real',
+            )
             reuse = False
         elif inputs == 'fake':
             new_layer = self._get_G_output_tensor()
@@ -552,12 +629,15 @@ class DCGAN:
 
         minibatch_size = self._config['minibatch_size']
 
-        print('Starting data input queue...')
-        coord = tf.train.Coordinator()
-        queue_threads = tf.train.start_queue_runners(
-            sess=self._tf_session,
-            coord=coord,
-        )
+#        print('Starting data input queue...')
+#        queue_threads = tf.train.start_queue_runners(
+#            sess=self._tf_session,
+#            coord=self._tf_coordinator,
+#        )
+        queue_threads = [threading.Thread(target=self._enqueue_thread)]
+        for t in queue_threads:
+            t.start()
+
         epoch = 0
         if self._step is None:
             self._step = 1
@@ -569,7 +649,10 @@ class DCGAN:
         num_steps_save = cfg_training['num_steps_save']
 
         try:
-            while self._step <= max_num_steps and not coord.should_stop():
+            while (
+                self._step <= max_num_steps
+                and not self._tf_coordinator.should_stop()
+            ):
                 # Train D.
                 fetches = [
 #                    self._tf_graph.get_tensor_by_name(
@@ -640,9 +723,14 @@ class DCGAN:
             raise RuntimeError
 
         finally:
-            coord.request_stop()
+            self._tf_coordinator.request_stop()
+            self._tf_session.run(
+                self._tf_graph.get_operation_by_name(
+                    'input_queue/close_op'
+                )
+            )
 
-        coord.join(queue_threads)
+        self._tf_coordinator.join(queue_threads)
 
         summary_writer.close()
 
