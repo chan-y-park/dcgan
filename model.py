@@ -106,7 +106,8 @@ class DCGAN:
             name='inputs',
         )
 
-        queue_capacity = 1000
+#        queue_capacity = 1000
+        queue_capacity = 2 * minibatch_size
 
         queue = tf.FIFOQueue(
             capacity=queue_capacity,
@@ -130,10 +131,18 @@ class DCGAN:
             name='dequeued_tensors',
         )
 
+        size_op = queue.size(
+            name='size',
+        )
+
     def _enqueue_thread(self):
+        minibatch_size = self._config['minibatch_size']
+
         num_data = len(self._data)
         i = 0
-        num_elements = 100
+#        num_elements = 100
+        num_elements = minibatch_size
+
         enqueue_op = self._tf_graph.get_operation_by_name(
             'input_queue/enqueue_op'
         )
@@ -497,6 +506,14 @@ class DCGAN:
                 )
             )
 
+        with tf.variable_scope('input_queue'):
+            tf.summary.scalar(
+                name='size',
+                tensor=self._tf_graph.get_tensor_by_name(
+                    'input_queue/size:0'
+                )
+            )
+
     def _load_data(self):
         dataset_name=self._config['dataset_name']
 
@@ -699,6 +716,13 @@ class DCGAN:
                     fetches=fetches,
                 )
                 summary_writer.add_summary(G_summary, self._step)
+
+                queue_summary = self._tf_session.run(
+                    self._tf_graph.get_tensor_by_name(
+                        'summary/input_queue/size:0'
+                    )
+                )
+                summary_writer.add_summary(queue_summary, self._step)
                 
                 if self._step % num_steps_display == 0:
                     print(
