@@ -54,8 +54,8 @@ svhn = {
     },
     'variable_initializer': {'mean': 0, 'stddev': 0.02},
     'input_data': {
-        'size': 28,
-        'num_chs': 1,
+        'size': 32,
+        'num_chs': 3,
         'train_size': 73257,
         'test_size': 26032,
     },

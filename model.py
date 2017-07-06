@@ -155,6 +155,7 @@ class DCGAN:
         while not self._tf_coordinator.should_stop():
             if (i + num_elements) <= num_data:
                 data_to_enqueue = self._data[i:(i + num_elements)]
+                i += num_elements
             else:
                 data_to_enqueue = self._data[i:]
                 i = num_elements - (num_data - i)
@@ -585,6 +586,14 @@ class DCGAN:
                 )
             ]
             samples = samples[:,:,:,np.newaxis]
+        elif dataset_name == 'SVHN':
+            samples = self._data[
+                np.random.randint(
+                    low=0,
+                    high=len(self._data),
+                    size=minibatch_size,
+                )
+            ]
         else:
             raise ValueError('Unknown dataset name: {}.'.format(dataset_name))
 
