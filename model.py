@@ -44,7 +44,6 @@ class DCGAN:
 
         self._load_data()
 
-        self._tf_summary = {}
         self._tf_session = None
         self._tf_coordinator = tf.train.Coordinator()
 
@@ -655,11 +654,6 @@ class DCGAN:
 
         minibatch_size = self._config['minibatch_size']
 
-#        print('Starting data input queue...')
-#        queue_threads = tf.train.start_queue_runners(
-#            sess=self._tf_session,
-#            coord=self._tf_coordinator,
-#        )
         queue_threads = [threading.Thread(target=self._enqueue_thread)]
         for t in queue_threads:
             t.start()
